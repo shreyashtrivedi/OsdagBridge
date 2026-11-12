@@ -360,7 +360,84 @@ def calculate_material_quantities(inputs: dict, outputs: dict) -> dict:
             quantities["crash_barrier_wt_single"] = "N.A."
             quantities["crash_barrier_wt_total"] = "N.A."
 
+        # 7. End Diaphragms (Cu.m) and Weight (MT)
+        quantities.update(_end_diaphragm_quantities(inputs, outputs, n_girders, spacing))
+
     except Exception as exc:
         logger.warning(f"Error calculating material quantities: {exc}")
 
     return quantities
+
+
+def _end_diaphragm_quantities(inputs: dict, outputs: dict, n_girders: int, spacing: float) -> dict:
+    """End-diaphragm steel take-off (both supports).
+
+    Per girder pair and per support:
+      * Cross Bracing type  -> 2 diagonals + top chord + bottom chord (if enabled)
+      * Rolled / Welded beam -> one beam spanning the girder spacing
+    Areas come from ``transverse_member_design.ed.section_properties.*`` (cm²),
+    mirroring the cross-bracing take-off above (steel density 7.85 t/m³).
+    """
+    out = {
+        "end_diaphragm_vol_formula": "N.A.",
+        "end_diaphragm_qty": "N.A.",
+        "end_diaphragm_vol_total": "N.A.",
+        "end_diaphragm_wt_single": "N.A.",
+        "end_diaphragm_wt_total": "N.A.",
+    }
+    if n_girders < 2 or spacing <= 0.0:
+        return out
+
+    prefix = "transverse_member_design.ed.section_properties"
+    ed_type_key = "member_properties.end_diaphragm_details.type"
+    cb_geom = (outputs.get("crossbracing_forces_dict") or {}).get("geometry") or {}
+
+    def _area_m2(member, pair_id):
+        try:
+            return float(outputs.get(f"{prefix}.{member}.{pair_id}.A")) / 1e4   # cm² -> m²
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _yes(v):
+        return str(v).strip().lower() in ("yes", "true", "1") if v is not None else True
+
+    total_vol = 0.0
+    n_pieces = 0
+    single_vol = None
+    for i in range(1, n_girders):
+        pair_id = f"G{i}G{i+1}"
+        sfx = f".{pair_id}.E{i}M1"
+        ed_type = str(inputs.get(f"{ed_type_key}{sfx}") or "").strip().lower()
+        a_main = _area_m2("end_diaphragm", pair_id)
+        if a_main <= 0.0:
+            continue
+        if "brac" in ed_type:
+            try:
+                diag_len = float(cb_geom.get("diagonal_length_m"))
+            except (TypeError, ValueError):
+                diag_len = spacing
+            vol = 2.0 * a_main * diag_len
+            pieces = 2
+            if _yes(inputs.get(f"member_properties.end_diaphragm_details.top_chord{sfx}")):
+                vol += (_area_m2("top_chord", pair_id) or a_main) * spacing
+                pieces += 1
+            if _yes(inputs.get(f"member_properties.end_diaphragm_details.bottom_chord{sfx}")):
+                vol += (_area_m2("bottom_chord", pair_id) or a_main) * spacing
+                pieces += 1
+        else:
+            vol = a_main * spacing
+            pieces = 1
+        single_vol = vol if single_vol is None else single_vol
+        total_vol += 2.0 * vol            # both supports
+        n_pieces += 2 * pieces
+
+    if total_vol <= 0.0:
+        return out
+    n_sets = 2 * (n_girders - 1)
+    out["end_diaphragm_vol_formula"] = (
+        f"${single_vol:.5f}\\text{{ m}}^3$ per set $\\times$ {n_sets} sets")
+    out["end_diaphragm_qty"] = str(n_pieces)
+    out["end_diaphragm_vol_total"] = f"{total_vol:.2f}"
+    out["end_diaphragm_wt_single"] = f"{single_vol * 7.85:.4f}"
+    out["end_diaphragm_wt_total"] = f"{total_vol * 7.85:.2f}"
+    return out

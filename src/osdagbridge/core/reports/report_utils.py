@@ -22,14 +22,37 @@ def _tex(value):
                     ('~', r'\textasciitilde{}'), ('^', r'\^{}')]:
         s = s.replace(ch, esc)
     s = s.replace(':', r':\allowbreak{}')
+    # Unicode math symbols that pdflatex cannot typeset directly (mapped after
+    # escaping so the inserted commands are not escaped themselves).
+    for uni, cmd in [('≤', r'\ensuremath{\leq}'), ('≥', r'\ensuremath{\geq}'),
+                     ('≠', r'\ensuremath{\neq}'), ('±', r'\ensuremath{\pm}'),
+                     ('√', r'\ensuremath{\surd}'), ('·', r'\ensuremath{\cdot}'),
+                     ('φ', r'\ensuremath{\phi}'), ('ϕ', r'\ensuremath{\phi}'),
+                     ('γ', r'\ensuremath{\gamma}'), ('λ', r'\ensuremath{\lambda}'),
+                     ('τ', r'\ensuremath{\tau}'), ('σ', r'\ensuremath{\sigma}'),
+                     ('Δ', r'\ensuremath{\Delta}'), ('δ', r'\ensuremath{\delta}'),
+                     ('χ', r'\ensuremath{\chi}'), ('μ', r'\ensuremath{\mu}'),
+                     ('–', '--'), ('—', '---')]:
+        s = s.replace(uni, cmd)
     return s
+
+
+def _fmt_number(val):
+    """Trim floating-point noise (12.149999999999999 -> 12.15) without
+    changing intentional precision: up to 4 significant decimals are kept."""
+    if isinstance(val, bool) or not isinstance(val, float):
+        return val
+    if val != val:            # NaN
+        return ""
+    s = f"{val:.4f}".rstrip("0")
+    return s + "0" if s.endswith(".") else s
 
 
 def _render_value(source_dict, key, unit=""):
     val = source_dict.get(key)
     if val in ("", None):
         return ""
-    return _tex(val) + unit
+    return _tex(_fmt_number(val)) + unit
 
 
 def get_girder_entries(input_dict):
@@ -73,43 +96,51 @@ def get_girder_entries(input_dict):
     return entries
 
 
-def _fig_or_placeholder(path, caption, width=r'0.9\textwidth'):
+def placeholder_box(caption, width=r'\linewidth'):
+    """Light framed box shown where a figure is not available.
+
+    Always a self-contained, full-width block (never sits side by side with
+    another box), so it cannot run into the margin."""
+    from osdagbridge.core.reports.styles import FIGURE
+    return (r'\par\noindent{\setlength{\fboxsep}{' + FIGURE["placeholder_pad"]
+            + r'}\fcolorbox{tblRule}{white}{\parbox{\dimexpr '
+            + width + r'-2\fboxsep-2\fboxrule\relax}{\centering\footnotesize\color{textMuted}'
+            r'\textit{[ Figure not available: ' + caption + r' ]}}}}\par')
+
+
+def _fig_or_placeholder(path, caption, width=None):
     """Embed figure if path is provided (file already copied to assets), else show placeholder box.
     path is the relative path as pdflatex will see it (e.g. 'assets/plan.png').
     """
+    from osdagbridge.core.reports.styles import FIGURE
+    width = width or FIGURE["default_width"]
     if path:
         p = path.replace('\\', '/')
         return (r'\begin{figure}[H]' + '\n'
                 r'\centering' + '\n'
-                r'\includegraphics[width=' + width + ']{' + p + '}\n'
+                r'\includegraphics[width=' + width + ',height=0.42\\textheight,keepaspectratio]{' + p + '}\n'
                 r'\caption*{' + caption + '}\n'
                 r'\end{figure}')
     return (r'\begin{figure}[H]' + '\n'
             r'\centering' + '\n'
-            r'\fbox{\parbox{0.97\textwidth}{' + '\n'
-            r'\textit{[ PLACEHOLDER: ' + caption + r' ]}' + '\n'
-            r'}}' + '\n'
+            + placeholder_box(caption) + '\n'
             r'\caption*{' + caption + '}\n'
             r'\end{figure}')
 
 def _fig_embed(path, caption, width=r'\textwidth', height=None):
-    """Embed a real figure when path is provided (already copied); otherwise use an fbox placeholder."""
+    """Embed a real figure when path is provided (already copied); otherwise use a placeholder box."""
     if path:
         p = path.replace('\\', '/')
         opts = 'width=' + width
         if height:
             opts += ',height=' + height + ',keepaspectratio'
         return (r'\begin{figure}[H]' + '\n'
-                r'\vspace{-0.5em}' + '\n'
                 r'\centering' + '\n'
                 r'\includegraphics[' + opts + ']{' + p + '}\n'
-                r'\vspace{0.5em}' + '\n'
                 r'\caption*{\small ' + caption + '}\n'
-                r'\vspace{-0.5em}' + '\n'
                 r'\end{figure}')
-    # fbox placeholder — matches template exactly
-    return (r'\noindent\fbox{\parbox{0.97\textwidth}{' + '\n'
-            r'\textit{[ PLACEHOLDER: ' + caption + r' ]}' + '\n'
-            r'}}')
+    return (r'\begin{figure}[H]' + '\n'
+            + placeholder_box(caption) + '\n'
+            r'\end{figure}')
 
 
